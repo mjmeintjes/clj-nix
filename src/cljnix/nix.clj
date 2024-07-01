@@ -3,7 +3,8 @@
     [clojure.java.io :as io]
     [babashka.fs :as fs]
     [clj-commons.byte-streams :as bs]
-    [cljnix.utils :refer [throw+]])
+    [cljnix.utils :refer [throw+]]
+    [clojure.string :as str])
   (:import
     [java.io ByteArrayOutputStream]
     [java.nio ByteBuffer ByteOrder]
@@ -18,7 +19,8 @@
   *path-filter*
  "Takes 1 argument, the path name. If true, the element will not be included in
  the NAR file"
- #{".git"})
+ #{".git"
+   ".clj-kondo/.cache"})
 
 
 (declare serialize-entry)
@@ -62,32 +64,31 @@
 (defn serialize-entry
   "NAR serialization algorithm
    serializeEntry(name,fso)"
-  [sink path]
+  [sink opts path]
   (-> sink
       (str! "entry")
       (open!)
       (str! "name")
       (str! (fs/file-name path))
       (str! "node")
-      (serialize' path)
+      (serialize' opts path)
       (close!)))
-
 
 (defmulti serialize''
   "NAR serialization algorithm
    serialize''(element)"
-  (fn [_ path]
+  (fn [_ {:keys [root]} path]
     (cond
       (fs/sym-link? path) :symlink
       (fs/regular-file? path) :regular
       (fs/directory? path) :directory)))
 
 (defmethod serialize'' :default
-  [_ path]
+  [_ _ path]
   (throw+ "Don't know how to serialize" {:file path}))
 
 (defmethod serialize'' :regular
-  [sink path]
+  [sink _ path]
   (-> sink
       (str! "type")
       (str! "regular")
@@ -100,7 +101,7 @@
   sink)
 
 (defmethod serialize'' :symlink
-  [sink path]
+  [sink _ path]
   (-> sink
       (str! "type")
       (str! "symlink")
@@ -109,24 +110,27 @@
 
 
 (defmethod serialize'' :directory
-  [sink path]
+  [sink {:keys [root] :as opts} path]
   (-> sink
       (str! "type")
       (str! "directory"))
   (doseq [entry (sort-by fs/file-name
-                         (remove (comp *path-filter* fs/file-name)
-                                 (fs/list-dir path)))]
-    (serialize-entry sink entry))
+                         (remove
+                          (fn [fl]
+                            (let [rel (str/replace (str fl) (str root "/") "")]
+                              (*path-filter* rel)))
+                          (fs/list-dir path)))]
+    (serialize-entry sink opts entry))
   sink)
 
 
 (defn serialize'
   "NAR serialization algorithm
    serialize'(fso)"
-  [sink path]
+  [sink opts path]
   (-> sink
       (open!)
-      (serialize'' path)
+      (serialize'' opts path)
       (close!)))
 
 
@@ -136,7 +140,7 @@
   [sink path]
   (-> sink
       (str! narVersionMagic1)
-      (serialize' (fs/path path))))
+      (serialize' {:root (fs/path path)} (fs/path path))))
 
 
 ;;;
